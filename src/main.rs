@@ -1,11 +1,14 @@
+use rand::thread_rng;
 use std::collections::HashMap;
 
 use ark_bls12_381::Fq;
+use ark_ff::Field;
 use ark_poly::{
     multivariate::{SparsePolynomial, SparseTerm, Term},
     univariate::DensePolynomial,
     DenseMVPolynomial, DenseUVPolynomial, Polynomial,
 };
+use ark_std::UniformRand;
 
 // This is a sumcheck protocol step by step
 // Domain of g is boolean: H = {0,1}
@@ -36,6 +39,9 @@ fn main() {
     println!("The sum is {}", sum);
 
     // Now, protocol starts here.
+    //
+    // --- Round 0 start---
+    //
     // 1. Prover calculates a univariate polynomial q0(x) and sends it to verifier.
     // q0(x) = Σ(w1,w2) g(x0, w1, w2)
 
@@ -57,7 +63,7 @@ fn main() {
 
     let mut coeffs: Vec<Fq> = vec![Fq::from(0); degree + 1];
 
-    for term in g.terms {
+    for term in g.terms.iter() {
         let (c, vars) = term;
         let mut has_0 = 0;
 
@@ -72,6 +78,72 @@ fn main() {
         coeffs[idx] += Fq::from(i32::pow(2, (num_vars - term_len) as u32)) * c;
     }
 
+    // 2. Prover sends q0 to Verifier
     let q0 = DensePolynomial::from_coefficients_vec(coeffs);
     println!("Polynomial: {:?}", q0);
+
+    // 3. Verifier checks if u = q0(0) + q0(1)
+    assert!(q0.evaluate(&Fq::from(0)) + q0.evaluate(&Fq::from(1)) == sum);
+
+    // 4. Sample random r0 and send to Prover
+    let mut rng = thread_rng();
+    let r0 = Fq::rand(&mut rng);
+
+    println!("Random r0: {:?}", r0);
+
+    // 5. Prover calculate g' = g(r0, x1, x2)
+    let g1 = {
+        // Store coefficients for each term.
+        let mut term_reg = HashMap::<Vec<(usize, usize)>, Fq>::new();
+
+        g.terms.iter().for_each(|term| {
+            let mut c = term.0;
+
+            if let Some(x0) = term.1.iter().find(|v| v.0 == i) {
+                c *= r0.pow([x0.1 as u64]);
+            }
+
+            let new_vars = term
+                .1
+                .iter()
+                .filter(|v| v.0 != i)
+                .copied()
+                .map(|(var, c)| (var - 1, c)) // decrement var number by 1
+                .collect::<Vec<_>>();
+            println!("New vars for term:{:?}, vars: {:?}", term, new_vars);
+
+            let zero = Fq::from(0);
+            let coeff = term_reg.get(&new_vars).unwrap_or(&zero);
+            term_reg.insert(new_vars, coeff + &c);
+        });
+
+        let terms = term_reg
+            .into_iter()
+            .map(|(key, val)| (val, SparseTerm::new(key)))
+            .collect::<Vec<(Fq, SparseTerm)>>();
+
+        println!("degree: {}", g.degree() - 1);
+        println!("Terms: {:?}", terms);
+
+        SparsePolynomial::from_coefficients_vec(g.num_vars() - 1, terms)
+    };
+
+    println!("New polynomial g1: {:?}", g1);
+
+    // --- Round 0 end---
+}
+
+#[cfg(test)]
+mod tests {
+    use ark_bls12_381::Fq;
+    use ark_ff::Field;
+
+    #[test]
+    fn test_pow() {
+        let x = Fq::from(3);
+        let p = 2;
+
+        let res = x.pow([p]);
+        assert_eq!(res, Fq::from(9));
+    }
 }
